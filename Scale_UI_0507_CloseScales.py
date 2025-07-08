@@ -374,9 +374,13 @@ class ScaleMonitor:
             cmd = f"@08gl{mux}"
             checksum = calculate_checksum(cmd)
             full_cmd = f"{cmd}{checksum}\r"
-            self.ser.write(full_cmd.encode("ascii"))
+            raw_cmd = full_cmd.encode("ascii")
+            print(f"Sending: {raw_cmd}")
+            self.ser.write(raw_cmd)
 
-            response = self.ser.readline().decode("latin-1", errors="replace").strip()
+            raw_response = self.ser.readline()
+            print(f"Raw Response: {raw_response}")
+            response = raw_response.decode("latin-1", errors="replace").strip()
             if not response:
                 return
             print(f"Decoded Response: {response}")
