@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import ttk
-import socket
 import threading
 import time
 import serial
@@ -9,8 +8,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 
 # ----- Configuration Constants -----
-DEFAULT_HOST = "localhost"   # default host for TCP/IP connection
-DEFAULT_PORT = 9999         # default TCP port
 POLLING_INTERVAL = 0.25       # seconds
 DEFAULT_SERIAL_PORT = "/dev/ttyUSB0"  # default serial port for MUX
 DEFAULT_BAUDRATE = 9600               # default baud rate
@@ -44,12 +41,6 @@ class ScaleMonitor:
         self.root = root
         self.root.title("Scale Monitor")
         
-        # TCP/IP socket connection variables (set via GUI)
-        self.socket_host = tk.StringVar(value=DEFAULT_HOST)
-        self.socket_port = tk.IntVar(value=DEFAULT_PORT)
-        self.sock = None
-        self.connect_socket()  # attempt initial connection
-
         # Serial connection variables for scale MUX
         self.serial_port = tk.StringVar(value=DEFAULT_SERIAL_PORT)
         self.baud_rate = tk.IntVar(value=DEFAULT_BAUDRATE)
@@ -128,21 +119,6 @@ class ScaleMonitor:
         self.poll_thread = threading.Thread(target=self.poll_weights)
         self.poll_thread.daemon = True
         self.poll_thread.start()
-    
-    def connect_socket(self):
-        try:
-            if self.sock:
-                self.sock.close()
-        except Exception as e:
-            print("Error closing socket:", e)
-        host = self.socket_host.get()
-        port = self.socket_port.get()
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((host, port))
-            print(f"Connected to socket at {host}:{port}")
-        except Exception as e:
-            print(f"Failed to connect to socket at {host}:{port}: {e}")
 
     def connect_serial(self):
         try:
@@ -173,17 +149,6 @@ class ScaleMonitor:
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # --- Left Column (Controls) ---
-        # Socket Connection Section
-        socket_frame = ttk.LabelFrame(left_frame, text="Socket Connection", padding=10)
-        socket_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(socket_frame, text="Host:").pack(side=tk.LEFT)
-        self.host_entry = ttk.Entry(socket_frame, textvariable=self.socket_host, width=10)
-        self.host_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(socket_frame, text="Port:").pack(side=tk.LEFT)
-        self.port_entry = ttk.Entry(socket_frame, textvariable=self.socket_port, width=5)
-        self.port_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Button(socket_frame, text="Connect", command=self.connect_socket).pack(side=tk.LEFT, padx=5)
-
         serial_frame = ttk.LabelFrame(left_frame, text="Serial Connection", padding=10)
         serial_frame.pack(fill=tk.X, pady=5)
         ttk.Label(serial_frame, text="Port:").pack(side=tk.LEFT)
@@ -380,7 +345,7 @@ class ScaleMonitor:
     
     def zero_scale(self, scale_index):
         print(f"Attempting to zero Scale {scale_index+1}")
-        # Zeroing not used in socket mode; kept for compatibility.
+        # Zeroing not implemented for serial connection
     
     def tare_bin(self):
         if len(self.last_raw_weights) == 4:
@@ -654,8 +619,6 @@ class ScaleMonitor:
     
     def on_close(self):
         self.running = False
-        if self.sock:
-            self.sock.close()
         self.root.destroy()
         
 if __name__ == "__main__":
