@@ -9,9 +9,11 @@ import numpy as np
 
 # ----- Configuration Constants -----
 POLLING_INTERVAL = 0.25       # seconds
-DEFAULT_SERIAL_PORT = "/dev/ttyUSB0"  # default serial port for MUX
+# Default serial port; adjust as needed (e.g. "COM6" on Windows)
+DEFAULT_SERIAL_PORT = "COM6"
 DEFAULT_BAUDRATE = 9600               # default baud rate
 DEFAULT_MUX_ID = "001"                 # default MUX identifier
+COMMAND_TERMINATOR = "\r"             # command termination character
 
 # Fixed bin dimensions
 BIN_LENGTH = 0.65  # meters
@@ -373,7 +375,7 @@ class ScaleMonitor:
             mux = self.mux_id.get() if isinstance(self.mux_id, tk.Variable) else self.mux_id
             cmd = f"@08gl{mux}"
             checksum = calculate_checksum(cmd)
-            full_cmd = f"{cmd}{checksum}\r"
+            full_cmd = f"{cmd}{checksum}{COMMAND_TERMINATOR}"
             raw_cmd = full_cmd.encode("ascii")
             print(f"Sending: {raw_cmd}")
             self.ser.write(raw_cmd)
