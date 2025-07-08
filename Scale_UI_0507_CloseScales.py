@@ -3,6 +3,7 @@ from tkinter import ttk
 import socket
 import threading
 import time
+import serial
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
@@ -11,6 +12,9 @@ import numpy as np
 DEFAULT_HOST = "localhost"   # default host for TCP/IP connection
 DEFAULT_PORT = 9999         # default TCP port
 POLLING_INTERVAL = 0.25       # seconds
+DEFAULT_SERIAL_PORT = "/dev/ttyUSB0"  # default serial port for MUX
+DEFAULT_BAUDRATE = 9600               # default baud rate
+DEFAULT_MUX_ID = "001"                 # default MUX identifier
 
 # Fixed bin dimensions
 BIN_LENGTH = 0.65  # meters
@@ -23,6 +27,18 @@ def calculate_checksum(command: str) -> str:
         checksum ^= ord(char)
     return f"{checksum:02X}"
 
+def parse_scale_token(token: str):
+    """Parse '@LLswwwwwwwwx' token into scale index, weight and status."""
+    if not token.startswith('@') or len(token) < 13:
+        return None
+    try:
+        scale = int(token[3])
+        weight = int(token[4:12]) / 1000.0
+        status = token[12]
+        return scale, weight, status
+    except Exception:
+        return None
+
 class ScaleMonitor:
     def __init__(self, root):
         self.root = root
@@ -33,6 +49,13 @@ class ScaleMonitor:
         self.socket_port = tk.IntVar(value=DEFAULT_PORT)
         self.sock = None
         self.connect_socket()  # attempt initial connection
+
+        # Serial connection variables for scale MUX
+        self.serial_port = tk.StringVar(value=DEFAULT_SERIAL_PORT)
+        self.baud_rate = tk.IntVar(value=DEFAULT_BAUDRATE)
+        self.mux_id = tk.StringVar(value=DEFAULT_MUX_ID)
+        self.ser = None
+        self.connect_serial()
         
         # Display variables
         self.weights = [tk.StringVar(value="0.0 kg") for _ in range(4)]
@@ -120,6 +143,20 @@ class ScaleMonitor:
             print(f"Connected to socket at {host}:{port}")
         except Exception as e:
             print(f"Failed to connect to socket at {host}:{port}: {e}")
+
+    def connect_serial(self):
+        try:
+            if self.ser:
+                self.ser.close()
+        except Exception as e:
+            print("Error closing serial port:", e)
+        port = self.serial_port.get() if isinstance(self.serial_port, tk.Variable) else self.serial_port
+        baud = self.baud_rate.get() if isinstance(self.baud_rate, tk.Variable) else self.baud_rate
+        try:
+            self.ser = serial.Serial(port, baudrate=baud, timeout=1)
+            print(f"Connected to serial port {port} at {baud} baud")
+        except Exception as e:
+            print(f"Failed to open serial port {port}: {e}")
     
     def create_ui(self):
         notebook = ttk.Notebook(self.root)
@@ -146,6 +183,19 @@ class ScaleMonitor:
         self.port_entry = ttk.Entry(socket_frame, textvariable=self.socket_port, width=5)
         self.port_entry.pack(side=tk.LEFT, padx=5)
         ttk.Button(socket_frame, text="Connect", command=self.connect_socket).pack(side=tk.LEFT, padx=5)
+
+        serial_frame = ttk.LabelFrame(left_frame, text="Serial Connection", padding=10)
+        serial_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(serial_frame, text="Port:").pack(side=tk.LEFT)
+        self.serial_entry = ttk.Entry(serial_frame, textvariable=self.serial_port, width=10)
+        self.serial_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(serial_frame, text="Baud:").pack(side=tk.LEFT)
+        self.baud_entry = ttk.Entry(serial_frame, textvariable=self.baud_rate, width=6)
+        self.baud_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(serial_frame, text="MUX ID:").pack(side=tk.LEFT)
+        self.mux_entry = ttk.Entry(serial_frame, textvariable=self.mux_id, width=4)
+        self.mux_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Button(serial_frame, text="Connect", command=self.connect_serial).pack(side=tk.LEFT, padx=5)
         
         # Scale Info Section (including Total Weight)
         scale_info = ttk.LabelFrame(left_frame, text="Scale Info", padding=10)
@@ -352,149 +402,155 @@ class ScaleMonitor:
     
     def request_weights(self):
         try:
-            # Read data from TCP/IP socket instead of a serial command.
-            raw_response = self.sock.recv(1024)
-            if not raw_response:
+            if not self.ser:
                 return
-            print(f"Raw Response: {raw_response}")
-            response = raw_response.decode("latin-1", errors="replace").strip()
+
+            mux = self.mux_id.get() if isinstance(self.mux_id, tk.Variable) else self.mux_id
+            cmd = f"@08gl{mux}"
+            checksum = calculate_checksum(cmd)
+            full_cmd = f"{cmd}{checksum}\r"
+            self.ser.write(full_cmd.encode("ascii"))
+
+            response = self.ser.readline().decode("latin-1", errors="replace").strip()
+            if not response:
+                return
             print(f"Decoded Response: {response}")
+
+            tokens = []
             if response.startswith("@"):
-                # Example message:
-                # @91 00000.226 00000.180 00000.197 00000.184 00024.010 ...
-                # Remove only the initial '@' (not the first three characters)
-                data = [x.strip() for x in response[1:].split() if x.strip()]
-                if len(data) < 5:
-                    return  # Not enough data
-                if data[0].startswith("91-"):
-                    # The first token has the header and weight for scale 1.
-                    scale_values = [data[0][3:]] + data[1:4]
-                else:
-                    # Otherwise, assume data[0] is a header (e.g., "91"), and use tokens 1-4.
-                    scale_values = data[1:5]
-                current_time = time.time() - self.start_time
-                self.time_data = np.append(self.time_data, current_time)
-                
-                total_weight = 0.0
-                raw_weights = []
-                adjusted_weights = []
-                for i in range(4):
-                    try:
-                        raw_str = scale_values[i].rstrip("C")
-                        raw_value = float(raw_str) if raw_str else 0.0
-                        # Dynamic rounding: resolution = object_unit_weight * (rounding_percentage/100)
-                        perc = self.rounding_percentage_var.get() / 100.0
-                        if self.object_unit_weight > 0:
-                            rounding_factor = self.object_unit_weight * perc
-                        else:
-                            rounding_factor = 0.01
-                        rounded_value = round(raw_value / rounding_factor) * rounding_factor
-                        
-                        value_to_use = rounded_value
-                        raw_weights.append(raw_value)
-                        if self.tare_active:
-                            adjusted = value_to_use - self.tare_values[i]
-                        else:
-                            adjusted = value_to_use
-                        adjusted_weights.append(adjusted)
-                        self.weights[i].set(f"{adjusted:.3f} kg")
-                        total_weight += adjusted
-                        if len(self.weight_data[i]) < len(self.time_data):
-                            self.weight_data[i] = np.append(self.weight_data[i], adjusted)
-                    except ValueError:
-                        print(f"Invalid weight data received for scale {i+1}: {scale_values[i]}")
-                        raw_weights.append(0.0)
-                        adjusted_weights.append(0.0)
-                
-                self.last_raw_weights = raw_weights.copy()
-                self.total_weight.set(f"{total_weight:.3f} kg")
-                self.total_weight_data = np.append(self.total_weight_data, total_weight)
-                self.update_graphs_data()
-                
-                # (Expected weight change update removed)
-                self.previous_total_weight = total_weight
-                
-                # --- Certainty Calculation ---
-                window_size = 5
-                if len(self.total_weight_data) >= window_size:
-                    recent_weights = self.total_weight_data[-window_size:]
-                    std_weight = np.std(recent_weights)
-                    expected_weight = self.object_unit_weight if self.object_unit_weight > 0 else 0.01
-                    weight_certainty = max(0, 100 * (1 - (std_weight / expected_weight)))
-                    self.weight_certainty_text.set(f"Weight Certainty: {weight_certainty:.1f}%")
-                else:
-                    self.weight_certainty_text.set("Weight Certainty: N/A")
-                
-                # Location Certainty: Compare computed COM to the expected compartment center.
-                com = self.calculate_center_of_mass(adjusted_weights)
-                if com[0] is not None and com[1] is not None:
-                    num_cols = self.num_cols.get()
-                    num_rows = self.num_rows.get()
-                    col_width = BIN_LENGTH / num_cols
-                    row_height = BIN_WIDTH / num_rows
-                    exp = self.expected_compartment.get()
-                    exp_index = exp - 1
-                    exp_row = exp_index // num_cols
-                    exp_col = exp_index % num_cols
-                    expected_center_x = exp_col * col_width + col_width / 2
-                    expected_center_y = exp_row * row_height + row_height / 2
-                    dist = np.sqrt((com[0] - expected_center_x)**2 + (com[1] - expected_center_y)**2)
-                    threshold_loc = min(col_width, row_height) / 2
-                    location_certainty = max(0, 100 * (1 - (dist / threshold_loc)))
-                    self.location_certainty_text.set(f"Location Certainty: {location_certainty:.1f}%")
-                else:
-                    self.location_certainty_text.set("Location Certainty: N/A")
-                
-                if (len(self.total_weight_data) >= window_size and com[0] is not None):
-                    composite_certainty = (weight_certainty + location_certainty) / 2.0
-                    self.certainty_text.set(f"Composite Certainty: {composite_certainty:.1f}%")
-                    self.composite_certainty = composite_certainty
-                else:
-                    self.certainty_text.set("Composite Certainty: N/A")
-                    self.composite_certainty = None
-                
-                # Auto-tare based on absolute conditions
-                current_timestamp = time.time()
-                self.total_weight_history.append((current_timestamp, total_weight))
-                self.total_weight_history = [(t, w) for (t, w) in self.total_weight_history
-                                             if current_timestamp - t <= self.auto_tare_stability_time_var.get()]
-                if len(self.total_weight_history) >= window_size:
-                    recent_weights_full = np.array([w for (t, w) in self.total_weight_history])
-                    stdev = np.std(recent_weights_full)
-                else:
-                    stdev = float('inf')
-                
-                if (abs(total_weight) > self.auto_tare_threshold_var.get() and
-                    stdev < self.auto_tare_stability_std_threshold_var.get() and
-                    (current_timestamp - self.last_auto_tare_time) > self.auto_tare_cooldown_var.get()):
-                    print("Auto-tare triggered (weight stabilized above threshold)!")
-                    self.tare_bin()
-                    self.last_auto_tare_time = current_timestamp
-                    total_weight = 0.0
-                
-                # Update object count
+                pieces = response.split('@')
+                for p in pieces:
+                    if p:
+                        tokens.append('@' + p.strip())
+
+            if len(tokens) < 4:
+                print("Incomplete response from scale MUX")
+                return
+
+            scale_values = [0.0] * 4
+            for tok in tokens:
+                parsed = parse_scale_token(tok)
+                if parsed:
+                    idx, weight, status = parsed
+                    if 1 <= idx <= 4:
+                        scale_values[idx - 1] = weight
+
+            current_time = time.time() - self.start_time
+            self.time_data = np.append(self.time_data, current_time)
+
+            total_weight = 0.0
+            raw_weights = []
+            adjusted_weights = []
+            for i in range(4):
+                raw_value = float(scale_values[i])
+                perc = self.rounding_percentage_var.get() / 100.0
                 if self.object_unit_weight > 0:
-                    self.object_count = int(round(abs(total_weight) / self.object_unit_weight))
+                    rounding_factor = self.object_unit_weight * perc
                 else:
-                    self.object_count = 0
-                
-                if len(adjusted_weights) == 4 and abs(total_weight) >= 0.01:
-                    x, y = self.calculate_center_of_mass(adjusted_weights)
-                    if x is not None and y is not None:
-                        if total_weight < 0:
-                            self.object_position.set(f"Removed from: X: {x:.3f} m, Y: {y:.3f} m")
-                        else:
-                            self.object_position.set(f"X: {x:.3f} m, Y: {y:.3f} m")
-                        self.update_object_position_plot(x, y)
-                        self.update_compartment_display(x, y)
+                    rounding_factor = 0.01
+                rounded_value = round(raw_value / rounding_factor) * rounding_factor
+
+                value_to_use = rounded_value
+                raw_weights.append(raw_value)
+                if self.tare_active:
+                    adjusted = value_to_use - self.tare_values[i]
+                else:
+                    adjusted = value_to_use
+                adjusted_weights.append(adjusted)
+                self.weights[i].set(f"{adjusted:.3f} kg")
+                total_weight += adjusted
+                if len(self.weight_data[i]) < len(self.time_data):
+                    self.weight_data[i] = np.append(self.weight_data[i], adjusted)
+
+            self.last_raw_weights = raw_weights.copy()
+            self.total_weight.set(f"{total_weight:.3f} kg")
+            self.total_weight_data = np.append(self.total_weight_data, total_weight)
+            self.update_graphs_data()
+
+            # (Expected weight change update removed)
+            self.previous_total_weight = total_weight
+
+            # --- Certainty Calculation ---
+            window_size = 5
+            if len(self.total_weight_data) >= window_size:
+                recent_weights = self.total_weight_data[-window_size:]
+                std_weight = np.std(recent_weights)
+                expected_weight = self.object_unit_weight if self.object_unit_weight > 0 else 0.01
+                weight_certainty = max(0, 100 * (1 - (std_weight / expected_weight)))
+                self.weight_certainty_text.set(f"Weight Certainty: {weight_certainty:.1f}%")
+            else:
+                self.weight_certainty_text.set("Weight Certainty: N/A")
+
+            # Location Certainty: Compare computed COM to the expected compartment center.
+            com = self.calculate_center_of_mass(adjusted_weights)
+            if com[0] is not None and com[1] is not None:
+                num_cols = self.num_cols.get()
+                num_rows = self.num_rows.get()
+                col_width = BIN_LENGTH / num_cols
+                row_height = BIN_WIDTH / num_rows
+                exp = self.expected_compartment.get()
+                exp_index = exp - 1
+                exp_row = exp_index // num_cols
+                exp_col = exp_index % num_cols
+                expected_center_x = exp_col * col_width + col_width / 2
+                expected_center_y = exp_row * row_height + row_height / 2
+                dist = np.sqrt((com[0] - expected_center_x)**2 + (com[1] - expected_center_y)**2)
+                threshold_loc = min(col_width, row_height) / 2
+                location_certainty = max(0, 100 * (1 - (dist / threshold_loc)))
+                self.location_certainty_text.set(f"Location Certainty: {location_certainty:.1f}%")
+            else:
+                self.location_certainty_text.set("Location Certainty: N/A")
+
+            if (len(self.total_weight_data) >= window_size and com[0] is not None):
+                composite_certainty = (weight_certainty + location_certainty) / 2.0
+                self.certainty_text.set(f"Composite Certainty: {composite_certainty:.1f}%")
+                self.composite_certainty = composite_certainty
+            else:
+                self.certainty_text.set("Composite Certainty: N/A")
+                self.composite_certainty = None
+
+            # Auto-tare based on absolute conditions
+            current_timestamp = time.time()
+            self.total_weight_history.append((current_timestamp, total_weight))
+            self.total_weight_history = [(t, w) for (t, w) in self.total_weight_history
+                                         if current_timestamp - t <= self.auto_tare_stability_time_var.get()]
+            if len(self.total_weight_history) >= window_size:
+                recent_weights_full = np.array([w for (t, w) in self.total_weight_history])
+                stdev = np.std(recent_weights_full)
+            else:
+                stdev = float('inf')
+
+            if (abs(total_weight) > self.auto_tare_threshold_var.get() and
+                stdev < self.auto_tare_stability_std_threshold_var.get() and
+                (current_timestamp - self.last_auto_tare_time) > self.auto_tare_cooldown_var.get()):
+                print("Auto-tare triggered (weight stabilized above threshold)!")
+                self.tare_bin()
+                self.last_auto_tare_time = current_timestamp
+                total_weight = 0.0
+
+            # Update object count
+            if self.object_unit_weight > 0:
+                self.object_count = int(round(abs(total_weight) / self.object_unit_weight))
+            else:
+                self.object_count = 0
+
+            if len(adjusted_weights) == 4 and abs(total_weight) >= 0.01:
+                x, y = self.calculate_center_of_mass(adjusted_weights)
+                if x is not None and y is not None:
+                    if total_weight < 0:
+                        self.object_position.set(f"Removed from: X: {x:.3f} m, Y: {y:.3f} m")
                     else:
-                        self.object_position.set("N/A")
-                        self.clear_object_position_plot()
-                        self.clear_compartment_display()
+                        self.object_position.set(f"X: {x:.3f} m, Y: {y:.3f} m")
+                    self.update_object_position_plot(x, y)
+                    self.update_compartment_display(x, y)
                 else:
                     self.object_position.set("N/A")
                     self.clear_object_position_plot()
                     self.clear_compartment_display()
+            else:
+                self.object_position.set("N/A")
+                self.clear_object_position_plot()
+                self.clear_compartment_display()
         except Exception as e:
             print("Error reading from scale:", e)
     
