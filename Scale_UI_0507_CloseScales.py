@@ -1,16 +1,19 @@
 import tkinter as tk
 from tkinter import ttk
-import socket
 import threading
 import time
+try:
+    import serial  # type: ignore
+except ImportError:  # pragma: no cover - serial optional
+    serial = None
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 
 # ----- Configuration Constants -----
-DEFAULT_HOST = "localhost"   # default host for TCP/IP connection
-DEFAULT_PORT = 9999         # default TCP port
-POLLING_INTERVAL = 0.25       # seconds
+DEFAULT_POLLING_INTERVAL = 0.25  # seconds
+DEFAULT_SERIAL_PORT = "COM3"   # default serial port, adjust for your OS
+DEFAULT_BAUD = 9600            # default baud rate
 
 # Fixed bin dimensions
 BIN_LENGTH = 0.65  # meters
@@ -28,11 +31,18 @@ class ScaleMonitor:
         self.root = root
         self.root.title("Scale Monitor")
         
-        # TCP/IP socket connection variables (set via GUI)
-        self.socket_host = tk.StringVar(value=DEFAULT_HOST)
-        self.socket_port = tk.IntVar(value=DEFAULT_PORT)
-        self.sock = None
-        self.connect_socket()  # attempt initial connection
+        # Serial connection variables
+        self.serial_port = tk.StringVar(value=DEFAULT_SERIAL_PORT)
+        self.serial_baud = tk.IntVar(value=DEFAULT_BAUD)
+        self.ser = None
+
+        # Polling interval variable
+        self.polling_interval_var = tk.DoubleVar(value=DEFAULT_POLLING_INTERVAL)
+
+        # Create log file
+        log_name = time.strftime("scale_log_%Y%m%d_%H%M%S.csv")
+        self.log_file = open(log_name, "w")
+        self.log_file.write("timestamp,scale1,scale2,scale3,scale4,total\n")
         
         # Display variables
         self.weights = [tk.StringVar(value="0.0 kg") for _ in range(4)]
@@ -105,21 +115,23 @@ class ScaleMonitor:
         self.poll_thread = threading.Thread(target=self.poll_weights)
         self.poll_thread.daemon = True
         self.poll_thread.start()
-    
-    def connect_socket(self):
+
+    def connect_serial(self):
+        if serial is None:
+            print("pyserial not installed; cannot use serial connection")
+            return
         try:
-            if self.sock:
-                self.sock.close()
+            if self.ser:
+                self.ser.close()
         except Exception as e:
-            print("Error closing socket:", e)
-        host = self.socket_host.get()
-        port = self.socket_port.get()
+            print("Error closing serial port:", e)
+        port = self.serial_port.get()
+        baud = self.serial_baud.get()
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((host, port))
-            print(f"Connected to socket at {host}:{port}")
+            self.ser = serial.Serial(port, baudrate=baud, timeout=1)
+            print(f"Connected to serial port {port} at {baud} baud")
         except Exception as e:
-            print(f"Failed to connect to socket at {host}:{port}: {e}")
+            print(f"Failed to connect to serial port {port}: {e}")
     
     def create_ui(self):
         notebook = ttk.Notebook(self.root)
@@ -136,16 +148,23 @@ class ScaleMonitor:
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # --- Left Column (Controls) ---
-        # Socket Connection Section
-        socket_frame = ttk.LabelFrame(left_frame, text="Socket Connection", padding=10)
-        socket_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(socket_frame, text="Host:").pack(side=tk.LEFT)
-        self.host_entry = ttk.Entry(socket_frame, textvariable=self.socket_host, width=10)
-        self.host_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(socket_frame, text="Port:").pack(side=tk.LEFT)
-        self.port_entry = ttk.Entry(socket_frame, textvariable=self.socket_port, width=5)
-        self.port_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Button(socket_frame, text="Connect", command=self.connect_socket).pack(side=tk.LEFT, padx=5)
+        # Serial Connection Section
+        serial_frame = ttk.LabelFrame(left_frame, text="Serial Connection", padding=10)
+        serial_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(serial_frame, text="Port:").pack(side=tk.LEFT)
+        self.serial_port_entry = ttk.Entry(serial_frame, textvariable=self.serial_port, width=10)
+        self.serial_port_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(serial_frame, text="Baud:").pack(side=tk.LEFT)
+        self.serial_baud_entry = ttk.Entry(serial_frame, textvariable=self.serial_baud, width=7)
+        self.serial_baud_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Button(serial_frame, text="Connect", command=self.connect_serial).pack(side=tk.LEFT, padx=5)
+
+        # Polling interval
+        poll_frame = ttk.LabelFrame(left_frame, text="Polling Interval (s)", padding=10)
+        poll_frame.pack(fill=tk.X, pady=5)
+        self.poll_entry = ttk.Entry(poll_frame, textvariable=self.polling_interval_var, width=7)
+        self.poll_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(poll_frame, text="seconds").pack(side=tk.LEFT)
         
         # Scale Info Section (including Total Weight)
         scale_info = ttk.LabelFrame(left_frame, text="Scale Info", padding=10)
@@ -330,7 +349,7 @@ class ScaleMonitor:
     
     def zero_scale(self, scale_index):
         print(f"Attempting to zero Scale {scale_index+1}")
-        # Zeroing not used in socket mode; kept for compatibility.
+        # Zeroing not used; kept for compatibility.
     
     def tare_bin(self):
         if len(self.last_raw_weights) == 4:
@@ -348,12 +367,16 @@ class ScaleMonitor:
     def poll_weights(self):
         if self.running:
             self.request_weights()
-            self.root.after(int(POLLING_INTERVAL * 1000), self.poll_weights)
+            interval = max(0.05, self.polling_interval_var.get())
+            self.root.after(int(interval * 1000), self.poll_weights)
     
     def request_weights(self):
+        """Retrieve weight data from the serial connection."""
         try:
-            # Read data from TCP/IP socket instead of a serial command.
-            raw_response = self.sock.recv(1024)
+            if self.ser and serial is not None and self.ser.is_open:
+                raw_response = self.ser.readline()
+            else:
+                return
             if not raw_response:
                 return
             print(f"Raw Response: {raw_response}")
@@ -409,6 +432,10 @@ class ScaleMonitor:
                 self.last_raw_weights = raw_weights.copy()
                 self.total_weight.set(f"{total_weight:.3f} kg")
                 self.total_weight_data = np.append(self.total_weight_data, total_weight)
+                if self.log_file:
+                    log_line = f"{time.time()}," + ",".join(f"{w}" for w in raw_weights) + f",{total_weight}\n"
+                    self.log_file.write(log_line)
+                    self.log_file.flush()
                 self.update_graphs_data()
                 
                 # (Expected weight change update removed)
@@ -598,8 +625,16 @@ class ScaleMonitor:
     
     def on_close(self):
         self.running = False
-        if self.sock:
-            self.sock.close()
+        if self.ser:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        if self.log_file:
+            try:
+                self.log_file.close()
+            except Exception:
+                pass
         self.root.destroy()
         
 if __name__ == "__main__":
