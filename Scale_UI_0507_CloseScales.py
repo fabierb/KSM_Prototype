@@ -22,7 +22,7 @@ BIN_WIDTH = 0.45   # meters
 
 def calculate_checksum(command: str) -> str:
     checksum = 0
-    for char in command[1:]:
+    for char in command[0:]:
         checksum ^= ord(char)
     return f"{checksum:02X}"
 
@@ -377,7 +377,7 @@ class ScaleMonitor:
             checksum = calculate_checksum(cmd)
             full_cmd = f"{cmd}{checksum}{COMMAND_TERMINATOR}"
             raw_cmd = full_cmd.encode("ascii")
-            print(f"Sending: {raw_cmd}")
+            print(f"Sending: {full_cmd}")
             self.ser.write(raw_cmd)
 
             raw_response = self.ser.readline()
