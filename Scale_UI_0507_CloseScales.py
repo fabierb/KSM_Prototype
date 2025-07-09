@@ -8,7 +8,7 @@ import numpy as np
 import re
 
 # ----- Configuration Constants -----
-POLLING_INTERVAL = 0.25       # seconds
+POLLING_INTERVAL = 0.2       # seconds
 # Default serial port; adjust as needed (e.g. "COM6" on Windows)
 DEFAULT_SERIAL_PORT = "COM6"
 DEFAULT_BAUDRATE = 9600               # default baud rate
@@ -101,9 +101,9 @@ class ScaleMonitor:
         
         # Scale positions (assumed at corners with slight offsets)
         self.scale_positions = [
+            (0.1, 0.1),
             (0.1, BIN_WIDTH - 0.1),
             (BIN_LENGTH - 0.1, BIN_WIDTH - 0.1),
-            (0.1, 0.1),
             (BIN_LENGTH - 0.1, 0.1)
         ]
         
@@ -149,7 +149,7 @@ class ScaleMonitor:
         port = self.serial_port.get() if isinstance(self.serial_port, tk.Variable) else self.serial_port
         baud = self.baud_rate.get() if isinstance(self.baud_rate, tk.Variable) else self.baud_rate
         try:
-            self.ser = serial.Serial(port, baudrate=baud, timeout=1)
+            self.ser = serial.Serial(port, baudrate=baud, timeout=POLLING_INTERVAL)
             print(f"Connected to serial port {port} at {baud} baud")
         except Exception as e:
             print(f"Failed to open serial port {port}: {e}")
