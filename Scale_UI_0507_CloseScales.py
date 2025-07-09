@@ -1,11 +1,11 @@
 import tkinter as tk
 from tkinter import ttk
-import threading
 import time
 import serial
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
+import re
 
 # ----- Configuration Constants -----
 POLLING_INTERVAL = 0.25       # seconds
@@ -37,6 +37,25 @@ def parse_scale_token(token: str):
         return scale, weight, status
     except Exception:
         return None
+
+def parse_mux_weights(response: str):
+    """Extract the four scale weights from a raw response string."""
+    if response.startswith('@'):
+        response = response[1:]
+    # Drop leading identifier digits (e.g. "69") if present
+    if len(response) > 2 and response[:2].isdigit():
+        response = response[2:]
+
+    matches = re.findall(r'([+-]?\d+\.\d+)([A-Za-z]?)', response)
+    weights = []
+    statuses = []
+    for value, status in matches:
+        try:
+            weights.append(float(value))
+            statuses.append(status)
+        except ValueError:
+            continue
+    return weights[:4], statuses[:4]
 
 class ScaleMonitor:
     def __init__(self, root):
@@ -118,9 +137,8 @@ class ScaleMonitor:
         
         self.running = True
         self.create_ui()
-        self.poll_thread = threading.Thread(target=self.poll_weights)
-        self.poll_thread.daemon = True
-        self.poll_thread.start()
+        # Schedule polling on the Tk event loop instead of using a thread
+        self.root.after(int(POLLING_INTERVAL * 1000), self.poll_weights)
 
     def connect_serial(self):
         try:
@@ -387,24 +405,10 @@ class ScaleMonitor:
                 return
             print(f"Decoded Response: {response}")
 
-            tokens = []
-            if response.startswith("@"):
-                pieces = response.split('@')
-                for p in pieces:
-                    if p:
-                        tokens.append('@' + p.strip())
-
-            if len(tokens) < 4:
+            scale_values, statuses = parse_mux_weights(response)
+            if len(scale_values) < 4:
                 print("Incomplete response from scale MUX")
                 return
-
-            scale_values = [0.0] * 4
-            for tok in tokens:
-                parsed = parse_scale_token(tok)
-                if parsed:
-                    idx, weight, status = parsed
-                    if 1 <= idx <= 4:
-                        scale_values[idx - 1] = weight
 
             current_time = time.time() - self.start_time
             self.time_data = np.append(self.time_data, current_time)
