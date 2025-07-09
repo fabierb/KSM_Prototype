@@ -8,7 +8,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 
 # ----- Configuration Constants -----
-POLLING_INTERVAL = 0.25       # seconds
+POLLING_INTERVAL = 0.5       # seconds
 # Default serial port; adjust as needed (e.g. "COM6" on Windows)
 DEFAULT_SERIAL_PORT = "COM6"
 DEFAULT_BAUDRATE = 9600               # default baud rate
@@ -60,7 +60,6 @@ class ScaleMonitor:
         self.tare_values = [0.0, 0.0, 0.0, 0.0]
         self.last_raw_weights = [0.0, 0.0, 0.0, 0.0]
         
-        # (Filtering removed)
         
         # Rounding resolution: determined dynamically by a percentage of the object unit weight.
         self.rounding_percentage_var = tk.DoubleVar(value=10)  # default 10%
@@ -345,10 +344,6 @@ class ScaleMonitor:
         
         self.clear_compartment_display()
     
-    def zero_scale(self, scale_index):
-        print(f"Attempting to zero Scale {scale_index+1}")
-        # Zeroing not implemented for serial connection
-    
     def tare_bin(self):
         if len(self.last_raw_weights) == 4:
             self.tare_values = self.last_raw_weights.copy()
@@ -491,25 +486,6 @@ class ScaleMonitor:
             else:
                 self.certainty_text.set("Composite Certainty: N/A")
                 self.composite_certainty = None
-
-            # Auto-tare based on absolute conditions
-            current_timestamp = time.time()
-            self.total_weight_history.append((current_timestamp, total_weight))
-            self.total_weight_history = [(t, w) for (t, w) in self.total_weight_history
-                                         if current_timestamp - t <= self.auto_tare_stability_time_var.get()]
-            if len(self.total_weight_history) >= window_size:
-                recent_weights_full = np.array([w for (t, w) in self.total_weight_history])
-                stdev = np.std(recent_weights_full)
-            else:
-                stdev = float('inf')
-
-            if (abs(total_weight) > self.auto_tare_threshold_var.get() and
-                stdev < self.auto_tare_stability_std_threshold_var.get() and
-                (current_timestamp - self.last_auto_tare_time) > self.auto_tare_cooldown_var.get()):
-                print("Auto-tare triggered (weight stabilized above threshold)!")
-                self.tare_bin()
-                self.last_auto_tare_time = current_timestamp
-                total_weight = 0.0
 
             # Update object count
             if self.object_unit_weight > 0:
