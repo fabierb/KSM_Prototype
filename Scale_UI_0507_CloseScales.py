@@ -387,24 +387,36 @@ class ScaleMonitor:
                 return
             print(f"Decoded Response: {response}")
 
+            # The response from the MUX follows the SICS protocol where the
+            # message is of the form '@<len><payload><checksum>'.  The payload
+            # contains the four scale readings separated by spaces.  Older
+            # firmware returned individual '@LLswwwwwwwwx' tokens which were
+            # parsed with ``parse_scale_token``.  Newer firmware (the format we
+            # currently handle) packs all values into a single payload.
+
+            scale_values = [0.0] * 4
             tokens = []
-            if response.startswith("@"):
-                pieces = response.split('@')
-                for p in pieces:
-                    if p:
-                        tokens.append('@' + p.strip())
+
+            if response.startswith("@") and len(response) > 3:
+                try:
+                    payload_length = int(response[1:3])
+                    payload = response[3:3 + payload_length]
+                    tokens = payload.split()
+                except ValueError:
+                    print("Invalid response length in scale data")
+                    return
+            else:
+                tokens = response.split()
 
             if len(tokens) < 4:
                 print("Incomplete response from scale MUX")
                 return
 
-            scale_values = [0.0] * 4
-            for tok in tokens:
-                parsed = parse_scale_token(tok)
-                if parsed:
-                    idx, weight, status = parsed
-                    if 1 <= idx <= 4:
-                        scale_values[idx - 1] = weight
+            for i in range(4):
+                try:
+                    scale_values[i] = float(tokens[i])
+                except (ValueError, IndexError):
+                    scale_values[i] = 0.0
 
             current_time = time.time() - self.start_time
             self.time_data = np.append(self.time_data, current_time)
