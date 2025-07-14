@@ -1,11 +1,13 @@
 import tkinter as tk
 from tkinter import ttk
-import threading
 import time
 import serial
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
+import re
+import csv
+import os
 
 # ----- Configuration Constants -----
 POLLING_INTERVAL = 0.25       # seconds
@@ -37,6 +39,25 @@ def parse_scale_token(token: str):
         return scale, weight, status
     except Exception:
         return None
+
+def parse_mux_weights(response: str):
+    """Extract the four scale weights from a raw response string."""
+    if response.startswith('@'):
+        response = response[1:]
+    # Drop leading identifier digits (e.g. "69") if present
+    if len(response) > 2 and response[:2].isdigit():
+        response = response[2:]
+
+    matches = re.findall(r'([+-]?\d+\.\d+)([A-Za-z]?)', response)
+    weights = []
+    statuses = []
+    for value, status in matches:
+        try:
+            weights.append(float(value))
+            statuses.append(status)
+        except ValueError:
+            continue
+    return weights[:4], statuses[:4]
 
 class ScaleMonitor:
     def __init__(self, root):
@@ -115,12 +136,14 @@ class ScaleMonitor:
         self.weight_data = [np.array([]) for _ in range(4)]
         self.total_weight_data = np.array([])
         self.start_time = time.time()
-        
+
+        # Directory to store CSV logs
+        self.log_dir = "logs"
+
         self.running = True
         self.create_ui()
-        self.poll_thread = threading.Thread(target=self.poll_weights)
-        self.poll_thread.daemon = True
-        self.poll_thread.start()
+        # Schedule polling on the Tk event loop instead of using a thread
+        self.root.after(int(POLLING_INTERVAL * 1000), self.poll_weights)
 
     def connect_serial(self):
         try:
@@ -315,8 +338,37 @@ class ScaleMonitor:
                 print("Please enter a positive weight.")
         except ValueError:
             print("Invalid entry for object weight.")
+
+    def log_measurements(self):
+        """Write the collected measurement data to a CSV file."""
+        if len(self.time_data) == 0:
+            print("No measurement data to log.")
+            return
+        os.makedirs(self.log_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join(self.log_dir, f"weights_{timestamp}.csv")
+        header = ["time"] + [f"scale{i+1}" for i in range(4)] + ["total"]
+        with open(filename, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for idx, t in enumerate(self.time_data):
+                row = [t]
+                for i in range(4):
+                    if idx < len(self.weight_data[i]):
+                        row.append(self.weight_data[i][idx])
+                    else:
+                        row.append("")
+                if idx < len(self.total_weight_data):
+                    row.append(self.total_weight_data[idx])
+                else:
+                    row.append("")
+                writer.writerow(row)
+        print(f"Measurement log saved to {filename}")
     
     def reset_graphs(self):
+        # Save the existing measurement data before clearing
+        self.log_measurements()
+
         self.time_data = np.array([])
         self.weight_data = [np.array([]) for _ in range(4)]
         self.total_weight_data = np.array([])
@@ -387,24 +439,10 @@ class ScaleMonitor:
                 return
             print(f"Decoded Response: {response}")
 
-            tokens = []
-            if response.startswith("@"):
-                pieces = response.split('@')
-                for p in pieces:
-                    if p:
-                        tokens.append('@' + p.strip())
-
-            if len(tokens) < 4:
+            scale_values, statuses = parse_mux_weights(response)
+            if len(scale_values) < 4:
                 print("Incomplete response from scale MUX")
                 return
-
-            scale_values = [0.0] * 4
-            for tok in tokens:
-                parsed = parse_scale_token(tok)
-                if parsed:
-                    idx, weight, status = parsed
-                    if 1 <= idx <= 4:
-                        scale_values[idx - 1] = weight
 
             current_time = time.time() - self.start_time
             self.time_data = np.append(self.time_data, current_time)
