@@ -621,11 +621,7 @@ class ScaleMonitor:
         self.ax_compartment.set_title("Compartment Layout")
         self.ax_compartment.set_xlabel("Length (m)")
         self.ax_compartment.set_ylabel("Width (m)")
-        self.canvas_compartment.draw()
-    
-    def simulate_object_addition(self):
-        # Manual trigger: previously set expected weight change; now removed.
-        print("Simulated object addition triggered (no expected weight change used).")
+        self.canvas_compartment.draw()   
     
     def on_close(self):
         self.running = False
