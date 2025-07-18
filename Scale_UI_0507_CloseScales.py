@@ -60,7 +60,6 @@ class ScaleMonitor:
         self.tare_values = [0.0, 0.0, 0.0, 0.0]
         self.last_raw_weights = [0.0, 0.0, 0.0, 0.0]
         
-        # (Filtering removed)
         
         # Rounding resolution: determined dynamically by a percentage of the object unit weight.
         self.rounding_percentage_var = tk.DoubleVar(value=10)  # default 10%
@@ -82,9 +81,9 @@ class ScaleMonitor:
         
         # Scale positions (assumed at corners with slight offsets)
         self.scale_positions = [
+            (0.1, 0.1),
             (0.1, BIN_WIDTH - 0.1),
             (BIN_LENGTH - 0.1, BIN_WIDTH - 0.1),
-            (0.1, 0.1),
             (BIN_LENGTH - 0.1, 0.1)
         ]
         
@@ -131,7 +130,7 @@ class ScaleMonitor:
         port = self.serial_port.get() if isinstance(self.serial_port, tk.Variable) else self.serial_port
         baud = self.baud_rate.get() if isinstance(self.baud_rate, tk.Variable) else self.baud_rate
         try:
-            self.ser = serial.Serial(port, baudrate=baud, timeout=1)
+            self.ser = serial.Serial(port, baudrate=baud, timeout=POLLING_INTERVAL)
             print(f"Connected to serial port {port} at {baud} baud")
         except Exception as e:
             print(f"Failed to open serial port {port}: {e}")
@@ -345,10 +344,6 @@ class ScaleMonitor:
         
         self.clear_compartment_display()
     
-    def zero_scale(self, scale_index):
-        print(f"Attempting to zero Scale {scale_index+1}")
-        # Zeroing not implemented for serial connection
-    
     def tare_bin(self):
         if len(self.last_raw_weights) == 4:
             self.tare_values = self.last_raw_weights.copy()
@@ -387,24 +382,36 @@ class ScaleMonitor:
                 return
             print(f"Decoded Response: {response}")
 
+            # The response from the MUX follows the SICS protocol where the
+            # message is of the form '@<len><payload><checksum>'.  The payload
+            # contains the four scale readings separated by spaces.  Older
+            # firmware returned individual '@LLswwwwwwwwx' tokens which were
+            # parsed with ``parse_scale_token``.  Newer firmware (the format we
+            # currently handle) packs all values into a single payload.
+
+            scale_values = [0.0] * 4
             tokens = []
-            if response.startswith("@"):
-                pieces = response.split('@')
-                for p in pieces:
-                    if p:
-                        tokens.append('@' + p.strip())
+
+            if response.startswith("@") and len(response) > 3:
+                try:
+                    payload_length = int(response[1:3])
+                    payload = response[3:3 + payload_length]
+                    tokens = payload.split()
+                except ValueError:
+                    print("Invalid response length in scale data")
+                    return
+            else:
+                tokens = response.split()
 
             if len(tokens) < 4:
                 print("Incomplete response from scale MUX")
                 return
 
-            scale_values = [0.0] * 4
-            for tok in tokens:
-                parsed = parse_scale_token(tok)
-                if parsed:
-                    idx, weight, status = parsed
-                    if 1 <= idx <= 4:
-                        scale_values[idx - 1] = weight
+            for i in range(4):
+                try:
+                    scale_values[i] = float(tokens[i])
+                except (ValueError, IndexError):
+                    scale_values[i] = 0.0
 
             current_time = time.time() - self.start_time
             self.time_data = np.append(self.time_data, current_time)
@@ -479,25 +486,6 @@ class ScaleMonitor:
             else:
                 self.certainty_text.set("Composite Certainty: N/A")
                 self.composite_certainty = None
-
-            # Auto-tare based on absolute conditions
-            current_timestamp = time.time()
-            self.total_weight_history.append((current_timestamp, total_weight))
-            self.total_weight_history = [(t, w) for (t, w) in self.total_weight_history
-                                         if current_timestamp - t <= self.auto_tare_stability_time_var.get()]
-            if len(self.total_weight_history) >= window_size:
-                recent_weights_full = np.array([w for (t, w) in self.total_weight_history])
-                stdev = np.std(recent_weights_full)
-            else:
-                stdev = float('inf')
-
-            if (abs(total_weight) > self.auto_tare_threshold_var.get() and
-                stdev < self.auto_tare_stability_std_threshold_var.get() and
-                (current_timestamp - self.last_auto_tare_time) > self.auto_tare_cooldown_var.get()):
-                print("Auto-tare triggered (weight stabilized above threshold)!")
-                self.tare_bin()
-                self.last_auto_tare_time = current_timestamp
-                total_weight = 0.0
 
             # Update object count
             if self.object_unit_weight > 0:
