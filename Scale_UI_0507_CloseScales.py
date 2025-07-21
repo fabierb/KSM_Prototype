@@ -55,6 +55,7 @@ class ScaleMonitor:
         # Object counting
         self.object_unit_weight = 0.01
         self.object_count = 0
+        self.object_count_var = tk.StringVar(value="0")
         
         # Auto-tare parameters
         self.auto_tare_threshold_var = tk.DoubleVar(value=4)
@@ -175,6 +176,13 @@ class ScaleMonitor:
         self.object_weight_entry = ttk.Entry(unit_weight, width=10)
         self.object_weight_entry.pack(side=tk.LEFT, padx=5)
         ttk.Button(unit_weight, text="Set", command=self.set_object_unit_weight).pack(side=tk.LEFT, padx=5)
+
+        # Current Object Count Display
+        count_display = ttk.LabelFrame(left_frame, text="Current Object Count", padding=10)
+        count_display.pack(fill=tk.X, pady=5)
+        self.object_count_label = tk.Label(count_display, textvariable=self.object_count_var,
+                                           font=("Arial", 24, "bold"), fg="blue")
+        self.object_count_label.pack(fill=tk.X)
         
         # Rounding Resolution (dynamic)
         rounding = ttk.LabelFrame(left_frame, text="Rounding", padding=10)
@@ -477,6 +485,7 @@ class ScaleMonitor:
                     self.object_count = int(round(abs(total_weight) / self.object_unit_weight))
                 else:
                     self.object_count = 0
+                self.object_count_var.set(str(self.object_count))
                 
                 if len(adjusted_weights) == 4 and abs(total_weight) >= 0.01:
                     x, y = self.calculate_center_of_mass(adjusted_weights)
