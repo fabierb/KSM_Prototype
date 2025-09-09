@@ -149,6 +149,14 @@ class ScaleMonitor:
         self.running = True
         self.object_count_var = tk.IntVar(value=0)
 
+        # Per-compartment weights and counts for combined view
+        self.compartment_unit_weights = [0.1, 0.1, 0.1, 0.1]
+        self.compartment_counts = [0, 0, 0, 0]
+        self.prev_total_weight = None
+        self.last_compartment = None
+        self.compartment_rects = []
+        self.compartment_texts = []
+
         self.create_ui()
         # Schedule polling on the Tk event loop instead of using a thread
         self.root.after(int(POLLING_INTERVAL*1000), self.poll_weights)
@@ -183,6 +191,11 @@ class ScaleMonitor:
         track_tab = ttk.Frame(notebook)
         notebook.add(track_tab, text="Tracking Overview")
         self.create_tracking_ui(track_tab)
+
+        # combined tracking and counting tab
+        combined_tab = ttk.Frame(notebook)
+        notebook.add(combined_tab, text="Combined Overview")
+        self.create_combined_ui(combined_tab)
         
     def create_control_ui(self, parent):
         # Divide window into left (controls) and right (graphs)
@@ -351,6 +364,7 @@ class ScaleMonitor:
             w = float(entry.get())
             if w > 0:
                 self.object_unit_weight = w
+                self._sync_compartment_weights(w)
             else:
                 print("Weight must be > 0")
         except ValueError:
@@ -374,6 +388,82 @@ class ScaleMonitor:
         self.canvas_compartment = FigureCanvasTkAgg(self.fig_compartment, master=plot_frame)
         self.canvas_compartment.get_tk_widget().pack(side=tk.BOTTOM, expand=True, fill=tk.BOTH)
 
+    def create_combined_ui(self, parent):
+        """Tab 4: Combined tracking and counting view."""
+        control = ttk.Frame(parent)
+        control.pack(fill=tk.X, pady=10)
+
+        self.comp_weight_entries = []
+        for i in range(4):
+            frm = ttk.Frame(control)
+            frm.pack(side=tk.LEFT, padx=5)
+            ttk.Label(frm, text=f"Comp {i+1} (kg):").pack(side=tk.LEFT)
+            ent = ttk.Entry(frm, width=7)
+            ent.insert(0, str(self.compartment_unit_weights[i]))
+            ent.pack(side=tk.LEFT)
+            ttk.Button(frm, text="Set",
+                       command=lambda idx=i, e=ent: self.set_compartment_weight(idx, e)).pack(side=tk.LEFT)
+            self.comp_weight_entries.append(ent)
+
+        ttk.Button(control, text="Tare Bin", command=self.tare_bin).pack(side=tk.LEFT, padx=10)
+
+        self.combined_canvas = tk.Canvas(parent, bg="white")
+        self.combined_canvas.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+        self.combined_canvas.bind("<Configure>", lambda e: self.draw_combined_bin())
+
+    def draw_combined_bin(self):
+        c = self.combined_canvas
+        c.delete("all")
+        w = int(c.winfo_width() or 400)
+        h = int(c.winfo_height() or 400)
+        self.compartment_rects = []
+        self.compartment_texts = []
+        for r in range(2):
+            for col in range(2):
+                idx = r * 2 + col
+                x0 = col * w/2
+                y0 = r * h/2
+                x1 = x0 + w/2
+                y1 = y0 + h/2
+                rect = c.create_rectangle(x0, y0, x1, y1, outline="black", fill="white")
+                txt = c.create_text((x0+x1)/2, (y0+y1)/2,
+                                    text=str(self.compartment_counts[idx]),
+                                    font=("Arial", 24))
+                self.compartment_rects.append(rect)
+                self.compartment_texts.append(txt)
+
+    def set_compartment_weight(self, idx, entry):
+        try:
+            w = float(entry.get())
+            if w > 0:
+                self.compartment_unit_weights[idx] = w
+        except ValueError:
+            print("Invalid weight")
+
+    def _sync_compartment_weights(self, weight):
+        self.compartment_unit_weights = [weight] * 4
+        if hasattr(self, "comp_weight_entries"):
+            for ent in self.comp_weight_entries:
+                ent.delete(0, tk.END)
+                ent.insert(0, str(weight))
+
+    def update_combined_display(self, highlight_idx=None, diff=0.0):
+        if len(self.compartment_texts) < 4 or len(self.compartment_rects) < 4:
+            return
+        for i in range(4):
+            self.combined_canvas.itemconfig(self.compartment_texts[i],
+                                            text=str(self.compartment_counts[i]))
+            color = "white"
+            if i == highlight_idx:
+                color = "lightgreen" if diff > 0 else "lightcoral"
+            self.combined_canvas.itemconfig(self.compartment_rects[i], fill=color)
+        if highlight_idx is not None:
+            self.root.after(500, lambda idx=highlight_idx: self.reset_combined_highlight(idx))
+
+    def reset_combined_highlight(self, idx):
+        if idx is not None and len(self.compartment_rects) > idx:
+            self.combined_canvas.itemconfig(self.compartment_rects[idx], fill="white")
+
     def calculate_center_of_mass(self, weights):
         total = sum(weights)
         if abs(total) < 1e-6:
@@ -393,6 +483,7 @@ class ScaleMonitor:
             weight = float(self.object_weight_entry.get())
             if weight > 0:
                 self.object_unit_weight = weight
+                self._sync_compartment_weights(weight)
                 print(f"Object unit weight set to {self.object_unit_weight} kg")
             else:
                 print("Please enter a positive weight.")
@@ -468,12 +559,19 @@ class ScaleMonitor:
             self.tare_values = self.last_raw_weights.copy()
             self.tare_active = True
             print("Tare set. Baseline values:", self.tare_values)
+            self.compartment_counts = [0, 0, 0, 0]
+            self.prev_total_weight = 0.0
+            self.last_compartment = None
+            if hasattr(self, 'combined_canvas'):
+                self.update_combined_display()
         else:
             print("No valid readings available to tare.")
     
     def clear_tare(self):
         self.tare_active = False
         self.tare_values = [0.0, 0.0, 0.0, 0.0]
+        self.prev_total_weight = None
+        self.last_compartment = None
         print("Tare cleared.")
     
     def poll_weights(self):
@@ -547,8 +645,6 @@ class ScaleMonitor:
             self.total_weight_data.append(total_weight)
             self.update_graphs_data()
 
-            self.previous_total_weight = total_weight
-
             # --- Certainty Calculation ---
             window_size = 5
             if len(self.total_weight_data) >= window_size:
@@ -589,14 +685,35 @@ class ScaleMonitor:
                 self.composite_certainty = None
 
 
-            # Update object count
-            if self.object_unit_weight > 0:
-                self.object_count = int(round(abs(total_weight) / self.object_unit_weight))
+            # Determine compartment and update counts
+            if self.prev_total_weight is None:
+                self.prev_total_weight = total_weight
             else:
-                self.object_count = 0
+                weight_diff = total_weight - self.prev_total_weight
+                self.prev_total_weight = total_weight
+                comp_index = None
+                if com[0] is not None and com[1] is not None:
+                    col = int(com[0] / (BIN_LENGTH / 2))
+                    row = int(com[1] / (BIN_WIDTH / 2))
+                    if 0 <= col < 2 and 0 <= row < 2:
+                        comp_index = row * 2 + col
+                        self.last_compartment = comp_index
+                else:
+                    comp_index = self.last_compartment
+                if comp_index is not None and 0 <= comp_index < 4:
+                    unit_w = self.compartment_unit_weights[comp_index]
+                    if unit_w > 0 and abs(weight_diff) >= unit_w / 2:
+                        count_change = int(round(weight_diff / unit_w))
+                        if count_change != 0:
+                            new_count = self.compartment_counts[comp_index] + count_change
+                            if new_count < 0:
+                                new_count = 0
+                            self.compartment_counts[comp_index] = new_count
+                            self.update_combined_display(comp_index, weight_diff)
+            self.object_count = sum(self.compartment_counts)
 
             if len(adjusted_weights) == 4 and abs(total_weight) >= 0.01:
-                x, y = self.calculate_center_of_mass(adjusted_weights)
+                x, y = com
                 if x is not None and y is not None:
                     if total_weight < 0:
                         self.object_position.set(f"Removed from: X: {x:.3f} m, Y: {y:.3f} m")
@@ -666,14 +783,15 @@ class ScaleMonitor:
         for r in range(1, num_rows):
             self.ax_compartment.plot([0, BIN_LENGTH], [r * row_height, r * row_height], color='black', linestyle='--')
         
-        if self.object_count > 0:
+        count = self.compartment_counts[computed_compartment - 1]
+        if count > 0:
             x0 = col * col_width
             y0 = row * row_height
             highlight = plt.Rectangle((x0, y0), col_width, row_height, color='lightgreen', alpha=0.5)
             self.ax_compartment.add_patch(highlight)
             x_center = x0 + col_width / 2
             y_center = y0 + row_height / 2
-            self.ax_compartment.text(x_center, y_center, f"Count: {self.object_count}",
+            self.ax_compartment.text(x_center, y_center, f"Count: {count}",
                                      horizontalalignment='center', verticalalignment='center',
                                      fontsize=14, color='blue')
         self.ax_compartment.set_xlim(0, BIN_LENGTH)
