@@ -153,6 +153,7 @@ class ScaleMonitor:
         self.compartment_unit_weights = [0.1, 0.1, 0.1, 0.1]
         self.compartment_counts = [0, 0, 0, 0]
         self.prev_total_weight = None
+        self.last_compartment = None
         self.compartment_rects = []
         self.compartment_texts = []
 
@@ -548,6 +549,7 @@ class ScaleMonitor:
             print("Tare set. Baseline values:", self.tare_values)
             self.compartment_counts = [0, 0, 0, 0]
             self.prev_total_weight = 0.0
+            self.last_compartment = None
             if hasattr(self, 'combined_canvas'):
                 self.update_combined_display()
         else:
@@ -557,6 +559,7 @@ class ScaleMonitor:
         self.tare_active = False
         self.tare_values = [0.0, 0.0, 0.0, 0.0]
         self.prev_total_weight = None
+        self.last_compartment = None
         print("Tare cleared.")
     
     def poll_weights(self):
@@ -676,15 +679,23 @@ class ScaleMonitor:
             else:
                 weight_diff = total_weight - self.prev_total_weight
                 self.prev_total_weight = total_weight
+                comp_index = None
                 if com[0] is not None and com[1] is not None:
                     col = int(com[0] / (BIN_LENGTH / 2))
                     row = int(com[1] / (BIN_WIDTH / 2))
                     comp_index = row * 2 + col
+                    self.last_compartment = comp_index
+                else:
+                    comp_index = self.last_compartment
+                if comp_index is not None:
                     unit_w = self.compartment_unit_weights[comp_index]
                     if unit_w > 0 and abs(weight_diff) >= unit_w / 2:
                         count_change = int(round(weight_diff / unit_w))
                         if count_change != 0:
-                            self.compartment_counts[comp_index] += count_change
+                            new_count = self.compartment_counts[comp_index] + count_change
+                            if new_count < 0:
+                                new_count = 0
+                            self.compartment_counts[comp_index] = new_count
                             self.update_combined_display(comp_index, weight_diff)
             self.object_count = sum(self.compartment_counts)
 
