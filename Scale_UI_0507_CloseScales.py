@@ -66,9 +66,9 @@ class ScaleMonitor:
         
         # Scale positions (assumed at corners with slight offsets)
         self.scale_positions = [
+            (0.1, 0.1),
             (0.1, BIN_WIDTH - 0.1),
             (BIN_LENGTH - 0.1, BIN_WIDTH - 0.1),
-            (0.1, 0.1),
             (BIN_LENGTH - 0.1, 0.1)
         ]
         
