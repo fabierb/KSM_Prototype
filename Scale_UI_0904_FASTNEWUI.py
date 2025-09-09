@@ -405,9 +405,9 @@ class ScaleMonitor:
 
         ttk.Button(control, text="Tare Bin", command=self.tare_bin).pack(side=tk.LEFT, padx=10)
 
-        self.combined_canvas = tk.Canvas(parent, width=400, height=400, bg="white")
+        self.combined_canvas = tk.Canvas(parent, bg="white")
         self.combined_canvas.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
-        self.draw_combined_bin()
+        self.combined_canvas.bind("<Configure>", lambda e: self.draw_combined_bin())
 
     def draw_combined_bin(self):
         c = self.combined_canvas
