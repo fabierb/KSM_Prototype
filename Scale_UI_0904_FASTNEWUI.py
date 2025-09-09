@@ -364,6 +364,7 @@ class ScaleMonitor:
             w = float(entry.get())
             if w > 0:
                 self.object_unit_weight = w
+                self._sync_compartment_weights(w)
             else:
                 print("Weight must be > 0")
         except ValueError:
@@ -439,7 +440,16 @@ class ScaleMonitor:
         except ValueError:
             print("Invalid weight")
 
+    def _sync_compartment_weights(self, weight):
+        self.compartment_unit_weights = [weight] * 4
+        if hasattr(self, "comp_weight_entries"):
+            for ent in self.comp_weight_entries:
+                ent.delete(0, tk.END)
+                ent.insert(0, str(weight))
+
     def update_combined_display(self, highlight_idx=None, diff=0.0):
+        if len(self.compartment_texts) < 4 or len(self.compartment_rects) < 4:
+            return
         for i in range(4):
             self.combined_canvas.itemconfig(self.compartment_texts[i],
                                             text=str(self.compartment_counts[i]))
@@ -451,7 +461,8 @@ class ScaleMonitor:
             self.root.after(500, lambda idx=highlight_idx: self.reset_combined_highlight(idx))
 
     def reset_combined_highlight(self, idx):
-        self.combined_canvas.itemconfig(self.compartment_rects[idx], fill="white")
+        if idx is not None and len(self.compartment_rects) > idx:
+            self.combined_canvas.itemconfig(self.compartment_rects[idx], fill="white")
 
     def calculate_center_of_mass(self, weights):
         total = sum(weights)
@@ -472,6 +483,7 @@ class ScaleMonitor:
             weight = float(self.object_weight_entry.get())
             if weight > 0:
                 self.object_unit_weight = weight
+                self._sync_compartment_weights(weight)
                 print(f"Object unit weight set to {self.object_unit_weight} kg")
             else:
                 print("Please enter a positive weight.")
@@ -683,11 +695,12 @@ class ScaleMonitor:
                 if com[0] is not None and com[1] is not None:
                     col = int(com[0] / (BIN_LENGTH / 2))
                     row = int(com[1] / (BIN_WIDTH / 2))
-                    comp_index = row * 2 + col
-                    self.last_compartment = comp_index
+                    if 0 <= col < 2 and 0 <= row < 2:
+                        comp_index = row * 2 + col
+                        self.last_compartment = comp_index
                 else:
                     comp_index = self.last_compartment
-                if comp_index is not None:
+                if comp_index is not None and 0 <= comp_index < 4:
                     unit_w = self.compartment_unit_weights[comp_index]
                     if unit_w > 0 and abs(weight_diff) >= unit_w / 2:
                         count_change = int(round(weight_diff / unit_w))
